@@ -28,7 +28,7 @@ argparse.open = open
 
 class BPE(object):
 
-    def __init__(self, codes, merges=-1, separator='@@', vocab=None, glossaries=None):
+    def __init__(self, codes, merges=-1, separator='@@', vocab=None, glossaries=None, word_level=False):
 
         codes.seek(0)
         offset=1
@@ -63,6 +63,8 @@ class BPE(object):
 
         self.cache = {}
 
+        self.word_level = word_level
+
     def process_line(self, line):
         """segment line, dealing with leading and trailing whitespace"""
 
@@ -82,7 +84,18 @@ class BPE(object):
 
     def segment(self, sentence):
         """segment single sentence (whitespace-tokenized string) with BPE encoding"""
-        segments = self.segment_tokens(sentence.strip('\r\n ').split(' '))
+        if not self.word_level:
+            segments = self.segment_tokens(sentence.strip('\r\n ').split(' '))
+        else:
+            segments = [out for out in encode(sentence.strip('\r\n ').split(' '),
+                                                        self.bpe_codes,
+                                                        self.bpe_codes_reverse,
+                                                        self.vocab,
+                                                        self.separator,
+                                                        self.version,
+                                                        self.cache,
+                                                        self.glossaries,
+                                                        self.word_level)]
         return ' '.join(segments)
 
     def segment_tokens(self, tokens):
@@ -160,6 +173,10 @@ def create_parser(subparsers=None):
         help="Glossaries. Words matching any of the words/regex provided in glossaries will not be affected "+
              "by the BPE (i.e. they will neither be broken into subwords, nor concatenated with other subwords. "+
              "Can be provided as a list of words/regex after the --glossaries argument. Enclose each regex in quotes.")
+    parser.add_argument(
+        '--word-level', '-w', action="store_true",
+        help="Operations at word level. BPE codes should also be word-level"
+    )
 
     return parser
 
@@ -175,12 +192,12 @@ def get_pairs(word):
         prev_char = char
     return pairs
 
-def encode(orig, bpe_codes, bpe_codes_reverse, vocab, separator, version, cache, glossaries=None):
+def encode(orig, bpe_codes, bpe_codes_reverse, vocab, separator, version, cache, glossaries=None, word_level=False):
     """Encode word based on list of BPE merge operations, which are applied consecutively
     """
 
-    if orig in cache:
-        return cache[orig]
+    if ' '.join(orig) in cache:
+        return cache[' '.join(orig)]
 
     for glossary in glossaries:
         if re.match('^'+glossary+'$', orig):
@@ -190,7 +207,10 @@ def encode(orig, bpe_codes, bpe_codes_reverse, vocab, separator, version, cache,
     if version == (0, 1):
         word = tuple(orig) + ('</w>',)
     elif version == (0, 2): # more consistent handling of word-final segments
-        word = tuple(orig[:-1]) + ( orig[-1] + '</w>',)
+        if word_level:
+            word = tuple(orig)
+        else:
+            word = tuple(orig[:-1]) + ( orig[-1] + '</w>',)
     else:
         raise NotImplementedError
 
@@ -216,7 +236,10 @@ def encode(orig, bpe_codes, bpe_codes_reverse, vocab, separator, version, cache,
                 break
 
             if word[i] == first and i < len(word)-1 and word[i+1] == second:
-                new_word.append(first+second)
+                if not word_level:
+                    new_word.append(first+second)
+                else:
+                    new_word.append(first+'@!@'+second)
                 i += 2
             else:
                 new_word.append(word[i])
@@ -237,7 +260,7 @@ def encode(orig, bpe_codes, bpe_codes_reverse, vocab, separator, version, cache,
     if vocab:
         word = check_vocab_and_split(word, bpe_codes_reverse, vocab, separator)
 
-    cache[orig] = word
+    cache[' '.join(orig)] = word
     return word
 
 def recursive_split(segment, bpe_codes, vocab, separator, final=False):
@@ -367,7 +390,7 @@ if __name__ == '__main__':
             args.glossaries = [g.decode('UTF-8') for g in args.glossaries]
 
 
-    bpe = BPE(args.codes, args.merges, args.separator, vocabulary, args.glossaries)
+    bpe = BPE(args.codes, args.merges, args.separator, vocabulary, args.glossaries, args.word_level)
 
     for line in args.input:
         args.output.write(bpe.process_line(line))

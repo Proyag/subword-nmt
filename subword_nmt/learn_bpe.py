@@ -59,12 +59,16 @@ def create_parser(subparsers=None):
         '--total-symbols', '-t', action="store_true",
         help="subtract number of characters from the symbols to be generated (so that '--symbols' becomes an estimate for the total number of symbols needed to encode text).")
     parser.add_argument(
+        '--word-level', '-w', action="store_true",
+        help='learn pairs of words instead of characters'
+    )
+    parser.add_argument(
         '--verbose', '-v', action="store_true",
         help="verbose mode.")
 
     return parser
 
-def get_vocabulary(fobj, is_dict=False):
+def get_vocabulary(fobj, is_dict=False, word_level=False):
     """Read text and return dictionary that encodes vocabulary
     """
     vocab = Counter()
@@ -77,9 +81,13 @@ def get_vocabulary(fobj, is_dict=False):
                 sys.exit(1)
             vocab[word] += int(count)
         else:
-            for word in line.strip('\r\n ').split(' '):
-                if word:
-                    vocab[word] += 1
+            if not word_level:
+                for word in line.strip('\r\n ').split(' '):
+                    if word:
+                        vocab[word] += 1
+            else:
+                if line.strip():
+                    vocab[line.strip()] += 1
     return vocab
 
 def update_pair_statistics(pair, changed, stats, indices):
@@ -91,7 +99,7 @@ def update_pair_statistics(pair, changed, stats, indices):
     stats[pair] = 0
     indices[pair] = defaultdict(int)
     first, second = pair
-    new_pair = first+second
+    new_pair = first+'@!@'+second
     for j, word, old_word, freq in changed:
 
         # find all instances of pair, and update frequency/indices around it
@@ -163,7 +171,7 @@ def get_pair_statistics(vocab):
 def replace_pair(pair, vocab, indices):
     """Replace all occurrences of a symbol pair ('A', 'B') with a new symbol 'AB'"""
     first, second = pair
-    pair_str = ''.join(pair)
+    pair_str = '@!@'.join(pair)
     pair_str = pair_str.replace('\\','\\\\')
     changes = []
     pattern = re.compile(r'(?<!\S)' + re.escape(first + ' ' + second) + r'(?!\S)')
@@ -200,7 +208,7 @@ def prune_stats(stats, big_stats, threshold):
                 big_stats[item] = freq
 
 
-def learn_bpe(infile, outfile, num_symbols, min_frequency=2, verbose=False, is_dict=False, total_symbols=False):
+def learn_bpe(infile, outfile, num_symbols, min_frequency=2, verbose=False, is_dict=False, total_symbols=False, word_level=False):
     """Learn num_symbols BPE operations from vocabulary, and write to outfile.
     """
 
@@ -208,8 +216,11 @@ def learn_bpe(infile, outfile, num_symbols, min_frequency=2, verbose=False, is_d
     # version numbering allows bckward compatibility
     outfile.write('#version: 0.2\n')
 
-    vocab = get_vocabulary(infile, is_dict)
-    vocab = dict([(tuple(x[:-1])+(x[-1]+'</w>',) ,y) for (x,y) in vocab.items()])
+    vocab = get_vocabulary(infile, is_dict, word_level)
+    if not word_level:
+        vocab = dict([(tuple(x[:-1])+(x[-1]+'</w>',) ,y) for (x,y) in vocab.items()])
+    else:
+        vocab = dict([(tuple(x.split()) ,y) for (x,y) in vocab.items()])
     sorted_vocab = sorted(vocab.items(), key=lambda x: x[1], reverse=True)
 
     stats, indices = get_pair_statistics(sorted_vocab)
@@ -247,7 +258,7 @@ def learn_bpe(infile, outfile, num_symbols, min_frequency=2, verbose=False, is_d
             break
 
         if verbose:
-            sys.stderr.write('pair {0}: {1} {2} -> {1}{2} (frequency {3})\n'.format(i, most_frequent[0], most_frequent[1], stats[most_frequent]))
+            sys.stderr.write('pair {0}: {1} {2} -> {1}@!@{2} (frequency {3})\n'.format(i, most_frequent[0], most_frequent[1], stats[most_frequent]))
         outfile.write('{0} {1}\n'.format(*most_frequent))
         changes = replace_pair(most_frequent, sorted_vocab, indices)
         update_pair_statistics(most_frequent, changes, stats, indices)
@@ -286,4 +297,4 @@ if __name__ == '__main__':
     if args.output.name != '<stdout>':
         args.output = codecs.open(args.output.name, 'w', encoding='utf-8')
 
-    learn_bpe(args.input, args.output, args.symbols, args.min_frequency, args.verbose, is_dict=args.dict_input, total_symbols=args.total_symbols)
+    learn_bpe(args.input, args.output, args.symbols, args.min_frequency, args.verbose, is_dict=args.dict_input, total_symbols=args.total_symbols, word_level=args.word_level)
